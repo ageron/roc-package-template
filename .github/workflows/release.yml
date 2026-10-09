@@ -35,6 +35,10 @@ jobs:
 
       - uses: ./.github/actions/setup-roc
 
+      - name: Require a branch for release follow-up PRs
+        if: github.event_name == 'workflow_dispatch'
+        run: test "$GITHUB_REF_TYPE" = branch
+
       - name: Run checks
         run: ROC=roc ./scripts/all_tests.sh
 
@@ -150,9 +154,10 @@ jobs:
           bundle_file="dist/${{ needs.build-bundle.outputs.bundle_filename }}"
           roc_version=$(roc version)
 
+          package_alias="$(python3 -c 'from scripts.example_dependencies import read_alias; print(read_alias())')"
           bundle_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/$BUNDLE_FILENAME"
-          printf 'Built with %s.\n\nImport this package:\n\n```roc\npkg: "%s"\n```\n\n`package-docs.tar.gz` contains the documentation generated from this release commit.\n' \
-            "$roc_version" "$bundle_url" > "$RUNNER_TEMP/release-notes.md"
+          printf 'Built with %s.\n\nImport this package:\n\n```roc\n%s: "%s"\n```\n\n`package-docs.tar.gz` contains the documentation generated from this release commit.\n' \
+            "$roc_version" "$package_alias" "$bundle_url" > "$RUNNER_TEMP/release-notes.md"
 
           gh release create "$RELEASE_TAG" \
             "$bundle_file" dist/package-docs.tar.gz \
@@ -172,3 +177,76 @@ jobs:
     uses: ./.github/workflows/generate-docs.yaml
     with:
       release-tag: ${{ inputs.release_tag }}
+
+  test-published-examples:
+    name: Test published examples (${{ matrix.os }})
+    needs: [build-bundle, create-release]
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-26, macos-26-intel, windows-2025]
+    defaults:
+      run:
+        shell: bash
+    env:
+      BUNDLE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/${{ needs.build-bundle.outputs.bundle_filename }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-roc
+      - name: Update and validate examples against the published archive
+        run: |
+          python3 scripts/update_example_urls.py --bundle-url "$BUNDLE_URL"
+          roc fmt --check examples
+          python3 scripts/test_bundle_examples.py --bundle-url "$BUNDLE_URL"
+
+  examples-pull-request:
+    name: Propose tested example URLs
+    needs: [build-bundle, test-published-examples]
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Update examples
+        env:
+          BUNDLE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/${{ needs.build-bundle.outputs.bundle_filename }}
+        run: python3 scripts/update_example_urls.py --bundle-url "$BUNDLE_URL"
+      - name: Open or update follow-up PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          BASE_BRANCH: ${{ github.ref_name }}
+          BRANCH: codex/release-examples-${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if git diff --quiet -- examples; then
+            echo "Examples already use this release."
+            exit 0
+          fi
+          if git ls-remote --exit-code --heads origin "$BRANCH" > /dev/null; then
+            git fetch origin "$BRANCH:refs/remotes/origin/$BRANCH"
+          fi
+          git switch --create "$BRANCH"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add examples
+          git commit -m "Update examples for $RELEASE_TAG"
+          git push --force-with-lease origin "$BRANCH"
+          title="Update examples for $RELEASE_TAG"
+          printf 'Updates the configured package dependency to the published %s archive.\n\nExamples passed checks, tests, interpreted execution, builds and compiled execution on all five runners. See [validation](%s).\n\nGITHUB_TOKEN does not trigger normal PR workflows; validation ran explicitly before this PR was opened.\n' \
+            "$RELEASE_TAG" "$RUN_URL" > "$RUNNER_TEMP/examples-pr.md"
+          pr="$(gh pr list --head "$BRANCH" --base "$BASE_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if [[ -z "$pr" ]]; then
+            gh pr create --head "$BRANCH" --base "$BASE_BRANCH" --title "$title" --body-file "$RUNNER_TEMP/examples-pr.md"
+          else
+            gh pr edit "$pr" --title "$title" --body-file "$RUNNER_TEMP/examples-pr.md"
+          fi

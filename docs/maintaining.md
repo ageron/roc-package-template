@@ -9,7 +9,7 @@
 - In **Settings → Pages**, select **GitHub Actions** as the publishing source.
   Allow the `github-pages` environment to deploy from your release branches and
   tags if you use environment protection rules.
-- To enable automatic compiler-update PRs, turn on **Allow GitHub Actions to
+- To enable automatic compiler-update and release-example PRs, turn on **Allow GitHub Actions to
   create and approve pull requests** under **Settings → Actions → General**.
   The workflow creates PRs; it does not approve or merge them. Repository or
   organization policies may need to allow this setting.
@@ -25,6 +25,14 @@ content-addressed `.tar.zst` archive, tests that same archive on all five
 OS/architecture combinations, and creates a GitHub release at the selected commit. It
 attaches the documentation built during those checks as `package-docs.tar.gz`,
 then deploys that exact documentation to Pages.
+
+After publishing, it updates the alias configured in `.package-alias` to the
+new archive URL and validates the examples on all five runners. Only after
+all checks pass does it open a follow-up PR against the release branch. Review
+and merge it yourself. Failed validation leaves the release published but
+creates no example-update PR. Rerun failed jobs to retry; the branch is reused
+within the same workflow run. These bot PRs link their validation run because
+`GITHUB_TOKEN` does not trigger ordinary PR checks.
 
 Release notes include a ready-to-copy import URL. Use the package archive's
 download URL in your consumers' app headers:
@@ -68,5 +76,5 @@ stale PR validation runs are cancelled. Missing artifacts fail the build.
 
 The docs site serves one release at its root. Historical versioned docs
 and API compatibility checks with `roc bump` are optional extensions,
-not enabled by this template. Examples keep local package imports so
-they continue to exercise your working source after a release.
+not enabled by this template. Local checks substitute the working package
+into temporary example copies, even when checked-in examples use release URLs.

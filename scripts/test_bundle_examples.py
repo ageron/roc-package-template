@@ -13,9 +13,10 @@ import tempfile
 import threading
 from pathlib import Path
 
+from example_dependencies import read_alias, rewritten_examples
+
 
 ROOT = Path(__file__).resolve().parents[1]
-LOCAL_PACKAGE = '"../package/main.roc"'
 ROC = os.environ.get("ROC", "roc")
 
 
@@ -82,17 +83,14 @@ def copy_examples_with_bundle_url(examples_dir: Path, bundle_url: str) -> list[P
     target_dir.mkdir()
 
     examples: list[Path] = []
-    for source_path in sorted((ROOT / "examples").glob("*.roc")):
+    try:
+        rewritten = rewritten_examples(ROOT / "examples", read_alias(), bundle_url)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
+    for source_path, source in rewritten:
         target_path = target_dir / source_path.name
-        source = source_path.read_text(encoding="utf-8")
-        if LOCAL_PACKAGE not in source:
-            raise SystemExit(f"{source_path.name} does not use the expected local package dependency")
-
-        target_path.write_text(source.replace(LOCAL_PACKAGE, f'"{bundle_url}"'), encoding="utf-8")
+        target_path.write_text(source, encoding="utf-8")
         examples.append(target_path)
-
-    if not examples:
-        raise SystemExit("No examples found to test")
 
     return examples
 
@@ -104,8 +102,7 @@ def run_example_checks(examples: list[Path]) -> None:
 
 def run_example_tests(examples: list[Path]) -> None:
     for example in examples:
-        if re.search(r"(?m)^\s*expect\b", example.read_text(encoding="utf-8")):
-            run([ROC, "test", example.name, "--no-cache"], cwd=example.parent)
+        run([ROC, "test", example.name, "--no-cache"], cwd=example.parent)
 
 
 def run_example_apps(examples: list[Path]) -> None:
@@ -127,7 +124,10 @@ def main() -> None:
     configure_output_encoding()
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--bundle-path", type=Path, help="Use an existing bundle instead of creating one")
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--bundle-path", type=Path, help="Use an existing bundle instead of creating one")
+    source.add_argument("--bundle-url", help="Test against an already published bundle URL")
+    source.add_argument("--local", action="store_true", help="Test examples against the working package")
     parser.add_argument("--skip-build-run", action="store_true", help="Skip compiled example execution")
     args = parser.parse_args()
 
@@ -143,6 +143,18 @@ def main() -> None:
 
         bundle_dir.mkdir()
         examples_dir.mkdir()
+
+        if args.local or args.bundle_url:
+            target = args.bundle_url
+            if args.local:
+                target = os.path.relpath(ROOT / "package/main.roc", examples_dir / "examples").replace(os.sep, "/")
+            examples = copy_examples_with_bundle_url(examples_dir, target)
+            run_example_checks(examples)
+            run_example_tests(examples)
+            run_example_apps(examples)
+            if not args.skip_build_run:
+                build_and_run_examples(examples, build_dir)
+            return
 
         if args.bundle_path is None:
             bundle_path = bundle_package(bundle_dir)

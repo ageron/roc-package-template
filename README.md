@@ -7,7 +7,8 @@ releases, documentation publishing, and compiler-update PRs.
 
 1. Create a repository from this template.
 2. Replace the `package/Example.roc` module with your own module(s). List public modules in `package/main.roc`.
-3. Replace the `examples/getting-started.roc` example, and add more if needed.
+3. Replace `examples/getting-started.roc`. Use the alias in [.package-alias](.package-alias)
+   (`pkg` by default) for your package in every example.
 4. Replace this README with your package's documentation.
 
 ## Run and test
