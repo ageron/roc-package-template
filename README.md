@@ -24,7 +24,8 @@ python3 scripts/test_bundle_examples.py
 ## Publish and maintain
 
 Configure GitHub once using the [setup guide](docs/maintaining.md#github-setup).
-Then run **Actions → Release** with a new tag such as `v0.1.0`.
+Releases use [release-package](https://github.com/roc-lang/release-package).
+Run **Actions → Release** with a new tag such as `0.1.0` (no `v` prefix).
 The **Update Roc** CI workflow automatically proposes tested PRs every week to update the Roc compiler.
 
 - [Development](docs/development.md): package layout, bundling, and local checks.

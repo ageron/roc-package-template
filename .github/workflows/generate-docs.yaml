@@ -20,6 +20,8 @@ concurrency:
   cancel-in-progress: false
 jobs:
   generate-docs:
+    # Prereleases keep their archive but do not replace the stable site automatically.
+    if: github.event_name != 'release' || !github.event.release.prerelease
     name: Deploy archived release documentation
     runs-on: ubuntu-24.04
     permissions:

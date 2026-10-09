@@ -1,5 +1,6 @@
 # Generated output
 /dist/
+/.release/
 /generated-docs/
 /.roc-package-tmp/
 __pycache__/

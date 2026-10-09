@@ -20,7 +20,7 @@ No personal access token is required. Workflows use the repository's built-in
 ## Release a version
 
 Run **Actions → Release → Run workflow**, select the branch to release, and
-enter a new tag such as `v0.1.0`. The workflow checks the sources, builds a
+enter a new tag such as `0.1.0` (no `v` prefix). The workflow checks the sources, builds a
 content-addressed `.tar.zst` archive, tests that same archive on all five
 OS/architecture combinations, and creates a GitHub release at the selected commit. It
 attaches the documentation built during those checks as `package-docs.tar.gz`,
@@ -31,14 +31,14 @@ new archive URL and validates the examples on all five runners. Only after
 all checks pass does it open a follow-up PR against the release branch. Review
 and merge it yourself. Failed validation leaves the release published but
 creates no example-update PR. Rerun failed jobs to retry; the branch is reused
-within the same workflow run. These bot PRs link their validation run because
+for the same version (`codex/release-examples/0.1.0`). These bot PRs link their validation run because
 `GITHUB_TOKEN` does not trigger ordinary PR checks.
 
 Release notes include a ready-to-copy import URL. Use the package archive's
 download URL in your consumers' app headers:
 
 ```roc
-pkg: "https://github.com/OWNER/REPOSITORY/releases/download/v0.1.0/HASH.tar.zst"
+pkg: "https://github.com/OWNER/REPOSITORY/releases/download/0.1.0/HASH.tar.zst"
 ```
 
 The release build and archive tests also run on pull requests, without
@@ -46,6 +46,23 @@ publishing. **Deploy release docs** can redeploy the latest release or a selecte
 without reinstalling Roc. Releases published manually must also attach
 `package-docs.tar.gz` to use this workflow. The Release workflow calls it explicitly because events
 created using `GITHUB_TOKEN` do not start ordinary downstream workflows.
+
+The release workflow uses SHA-pinned actions from
+[roc-lang/release-package](https://github.com/roc-lang/release-package) for
+version validation, bundle metadata, release notes, publishing, and follow-up
+PRs. This repository supplies the compiler, runners, tests, example rewrites,
+and documentation deployment.
+
+The first release skips API comparison when no previous stable bundle exists.
+Later releases require `roc bump` to validate the requested version against the
+latest stable release. PR runs use release-package's dry-run validation and do
+not publish or run the API comparison. To update release-package itself,
+replace its pinned SHA consistently in `.github/workflows/release.yml` and
+review upstream input/output changes.
+
+Versions such as `0.2.0-rc1` are published as prereleases. They receive the same
+bundle and example checks and a docs archive, but do not automatically replace
+the stable Pages site. **Deploy release docs** can deploy their archive manually.
 
 ## Update Roc
 
@@ -74,7 +91,6 @@ CI builds one archive on Linux and tests those exact bytes on every
 runner, including Windows. Releases are serialized across branches;
 stale PR validation runs are cancelled. Missing artifacts fail the build.
 
-The docs site serves one release at its root. Historical versioned docs
-and API compatibility checks with `roc bump` are optional extensions,
+The docs site serves one release at its root. Historical versioned docs are an optional extension,
 not enabled by this template. Local checks substitute the working package
 into temporary example copies, even when checked-in examples use release URLs.
