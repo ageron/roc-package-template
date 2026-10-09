@@ -1,0 +1,90 @@
+name: Update Roc
+on:
+  schedule:
+    - cron: "0 12 * * 1"
+  workflow_dispatch:
+    inputs:
+      nightly_tag:
+        description: Nightly release tag (leave empty for latest)
+        required: false
+        type: string
+permissions: {}
+concurrency:
+  group: update-roc
+  cancel-in-progress: false
+jobs:
+  candidate:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      changed: ${{ steps.version.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select nightly
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.nightly_tag }}
+        run: |
+          set -euo pipefail
+          tag="$REQUESTED_TAG"
+          if [[ -z "$tag" ]]; then
+            tag="$(gh release view --repo roc-lang/nightlies --json tagName --jq .tagName)"
+          fi
+          if [[ ! "$tag" =~ ^nightly-[0-9]{4}-([A-Za-z]+|[0-9]{2})-[0-9]{2}-[0-9a-f]{7,40}$ ]]; then
+            echo "Invalid Roc nightly tag: $tag" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [[ "$tag" == "$(tr -d '\r\n' < .roc-version)" ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+  test:
+    needs: candidate
+    if: needs.candidate.outputs.changed == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/tests.yaml
+    with:
+      roc-nightly: ${{ needs.candidate.outputs.tag }}
+  pull-request:
+    needs: [candidate, test]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Propose the tested version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NIGHTLY_TAG: ${{ needs.candidate.outputs.tag }}
+          BASE_BRANCH: ${{ github.ref_name }}
+          BRANCH: codex/update-roc-nightly
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # Capture the current remote branch so force-with-lease protects later edits.
+          if git ls-remote --exit-code --heads origin "$BRANCH" > /dev/null; then
+            git fetch origin "$BRANCH:refs/remotes/origin/$BRANCH"
+          fi
+          git switch --create "$BRANCH"
+          printf '%s\n' "$NIGHTLY_TAG" > .roc-version
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .roc-version
+          git commit -m "Update Roc to $NIGHTLY_TAG"
+          git push --force-with-lease origin "$BRANCH"
+          title="Update Roc to $NIGHTLY_TAG"
+          printf 'Updates the compiler pin to `%s`.\n\nPackage, example, documentation and bundled-dependency checks passed on Linux, macOS and Windows. See [the validation run](%s).\n\nGenerated with GITHUB_TOKEN; this workflow ran the checks explicitly before opening the PR.\n' \
+            "$NIGHTLY_TAG" "$RUN_URL" > "$RUNNER_TEMP/roc-update-pr.md"
+          pr="$(gh pr list --head "$BRANCH" --base "$BASE_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if [[ -z "$pr" ]]; then
+            gh pr create --head "$BRANCH" --base "$BASE_BRANCH" --title "$title" --body-file "$RUNNER_TEMP/roc-update-pr.md"
+          else
+            gh pr edit "$pr" --title "$title" --body-file "$RUNNER_TEMP/roc-update-pr.md"
+          fi

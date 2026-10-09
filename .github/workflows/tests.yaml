@@ -1,0 +1,71 @@
+name: Tests
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      roc-nightly:
+        description: Test a candidate compiler without changing the repository pin
+        required: false
+        type: string
+        default: ""
+permissions: {}
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  bundle:
+    name: Build portable package archive
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      filename: ${{ steps.bundle.outputs.filename }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-roc
+        with:
+          nightly-tag: ${{ inputs.roc-nightly || '' }}
+      - name: Bundle package
+        id: bundle
+        shell: bash
+        run: |
+          scripts/bundle.sh --output-dir dist
+          bundles=(dist/*.tar.zst)
+          [[ ${#bundles[@]} == 1 && -f "${bundles[0]}" ]]
+          echo "filename=$(basename "${bundles[0]}")" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-package-bundle
+          path: dist/${{ steps.bundle.outputs.filename }}
+          if-no-files-found: error
+          retention-days: 7
+  test:
+    needs: bundle
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # Cover both architectures instead of relying on moving -latest labels.
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-26, macos-26-intel, windows-2025]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-roc
+        with:
+          nightly-tag: ${{ inputs.roc-nightly || '' }}
+      - name: Check, test, build and generate docs
+        run: ./scripts/all_tests.sh
+      # Bundle once on Linux and test those exact bytes everywhere, including Windows.
+      - uses: actions/download-artifact@v4
+        with:
+          name: test-package-bundle
+          path: dist
+      - name: Test the bundled package as a dependency
+        run: python3 scripts/test_bundle_examples.py --bundle-path "dist/${{ needs.bundle.outputs.filename }}"

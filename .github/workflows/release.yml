@@ -1,0 +1,174 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag, e.g. v0.1.0"
+        required: true
+        type: string
+  pull_request:
+
+concurrency:
+  # Serialize publishing across branches, while superseding stale PR checks.
+  group: ${{ github.event_name == 'workflow_dispatch' && format('release-{0}', github.repository) || format('release-validate-{0}-{1}', github.repository, github.ref) }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+# Do not add permissions here. Configure them at the job level.
+permissions: {}
+
+jobs:
+  build-bundle:
+    name: Build package bundle
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      bundle_filename: ${{ steps.bundle.outputs.bundle_filename }}
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-roc
+
+      - name: Run checks
+        run: ROC=roc ./scripts/all_tests.sh
+
+      - name: Bundle package
+        id: bundle
+        run: |
+          bundle_output=$(scripts/bundle.sh --output-dir dist 2>&1)
+          echo "$bundle_output"
+
+          bundle_path=$(echo "$bundle_output" | awk '/^Created:/ { print $2; exit }')
+          if [[ -z "$bundle_path" || ! -f "$bundle_path" ]]; then
+            echo "Error: could not find bundle path from roc bundle output"
+            exit 1
+          fi
+
+          bundle_filename=$(basename "$bundle_path")
+          echo "bundle_filename=$bundle_filename" >> "$GITHUB_OUTPUT"
+
+      - name: Upload package bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-bundle
+          path: dist/${{ steps.bundle.outputs.bundle_filename }}
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Archive the documentation built during checks
+        run: tar -czf dist/package-docs.tar.gz -C generated-docs .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-docs
+          path: dist/package-docs.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+
+  test-bundle:
+    name: Test package bundle (${{ matrix.os }})
+    needs: build-bundle
+    permissions:
+      contents: read
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
+          - macos-26
+          - macos-26-intel
+          - windows-2025
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-roc
+
+      - name: Download package bundle artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: package-bundle
+          path: dist
+
+      - name: Test examples against downloaded bundle
+        run: python3 scripts/test_bundle_examples.py --bundle-path "dist/${{ needs.build-bundle.outputs.bundle_filename }}"
+
+  create-release:
+    name: Create GitHub release
+    needs:
+      - build-bundle
+      - test-bundle
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download package bundle artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: package-bundle
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-docs
+          path: dist
+
+      - uses: ./.github/actions/setup-roc
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_COMMIT: ${{ github.sha }}
+          BUNDLE_FILENAME: ${{ needs.build-bundle.outputs.bundle_filename }}
+        run: |
+          git check-ref-format "refs/tags/$RELEASE_TAG"
+          if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" > /dev/null; then
+            echo "Tag already exists: $RELEASE_TAG. Choose a new release tag." >&2
+            exit 1
+          fi
+          bundle_file="dist/${{ needs.build-bundle.outputs.bundle_filename }}"
+          roc_version=$(roc version)
+
+          bundle_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/$BUNDLE_FILENAME"
+          printf 'Built with %s.\n\nImport this package:\n\n```roc\npkg: "%s"\n```\n\n`package-docs.tar.gz` contains the documentation generated from this release commit.\n' \
+            "$roc_version" "$bundle_url" > "$RUNNER_TEMP/release-notes.md"
+
+          gh release create "$RELEASE_TAG" \
+            "$bundle_file" dist/package-docs.tar.gz \
+            --title "$RELEASE_TAG" \
+            --target "$RELEASE_COMMIT" \
+            --generate-notes \
+            --notes-file "$RUNNER_TEMP/release-notes.md"
+
+  publish-docs:
+    name: Publish release documentation
+    needs: create-release
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/generate-docs.yaml
+    with:
+      release-tag: ${{ inputs.release_tag }}

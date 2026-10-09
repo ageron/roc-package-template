@@ -1,0 +1,59 @@
+name: Deploy release docs
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release-tag:
+        description: Release tag to deploy (empty uses the latest release)
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      release-tag:
+        description: Release whose documentation asset should be deployed
+        required: true
+        type: string
+permissions: {}
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+jobs:
+  generate-docs:
+    name: Deploy archived release documentation
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure Pages
+        id: pages
+        uses: actions/configure-pages@v5
+      # Redeploy the original docs without needing the original compiler.
+      - name: Download release documentation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release-tag || github.event.release.tag_name }}
+        run: |
+          mkdir -p dist generated-docs
+          args=()
+          if [[ -n "$RELEASE_TAG" ]]; then args+=("$RELEASE_TAG"); fi
+          gh release download "${args[@]}" --pattern package-docs.tar.gz --dir dist
+          tar -xzf dist/package-docs.tar.gz -C generated-docs
+          test -f generated-docs/index.html
+      - name: Fix absolute paths for project sites
+        env:
+          BASE_PATH: ${{ steps.pages.outputs.base_path }}
+        run: |
+          find generated-docs/ -type f -name '*.html' -exec sed -i "s|\(href\|src\)=\"/|\1=\"${BASE_PATH}/|g" {} +
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: generated-docs
+      - name: Deploy docs
+        id: deploy
+        uses: actions/deploy-pages@v4
